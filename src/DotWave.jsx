@@ -6,7 +6,7 @@ const VERTEX_SHADER = `#version 300 es
 `
 
 const FRAGMENT_SHADER = `#version 300 es
-  precision highp float;
+  precision mediump float;
 
   uniform float u_time;
   uniform vec2 u_resolution;
@@ -43,33 +43,18 @@ const FRAGMENT_SHADER = `#version 300 es
     return 130.0 * dot(m, g);
   }
 
-  float hash21(vec2 p) {
-    return fract(sin(dot(p + vec2(37.17, 19.23), vec2(127.1, 311.7))) * 43758.5453123);
-  }
-
-  float fbm(vec2 p) {
-    float value = 0.0;
-    float amplitude = 0.5;
-    for (int octave = 0; octave < 4; octave++) {
-      value += amplitude * snoise(p);
-      p = p * 2.02 + vec2(17.1, 9.2);
-      amplitude *= 0.5;
-    }
-    return value * 0.5 + 0.5;
-  }
-
   float organicField(vec2 p, float time) {
     vec2 driftA = vec2(time * 0.0306, -time * 0.0216);
     vec2 driftB = vec2(-time * 0.0198, time * 0.0324);
     vec2 warp = vec2(
-      fbm(p * 1.18 + driftA + vec2(13.7, 4.1)),
-      fbm(p * 1.18 + driftB + vec2(2.8, 17.4))
-    ) * 2.0 - 1.0;
-    vec2 warped = p * 1.72 + warp * 0.72;
-    float broad = fbm(warped + driftA + vec2(7.2, 11.6));
-    float middle = fbm(warped * 1.65 - warp * 0.48 + driftB + vec2(19.1, 5.7));
-    float grain = snoise(warped * 5.2 + driftA * 1.7 + vec2(31.4, 8.6)) * 0.5 + 0.5;
-    return clamp(broad * 0.53 + middle * 0.29 + grain * 0.18, 0.0, 1.0);
+      snoise(p * 0.92 + driftA + vec2(13.7, 4.1)),
+      snoise(p * 0.92 + driftB + vec2(2.8, 17.4))
+    ) * 0.42;
+    vec2 warped = p * 1.58 + warp;
+    float broad = snoise(warped + driftA + vec2(7.2, 11.6)) * 0.5 + 0.5;
+    float middle = snoise(warped * 1.62 + driftB + vec2(19.1, 5.7)) * 0.5 + 0.5;
+    float detail = snoise(warped * 3.25 - driftA * 0.65 + vec2(31.4, 8.6)) * 0.5 + 0.5;
+    return clamp(broad * 0.56 + middle * 0.31 + detail * 0.13, 0.0, 1.0);
   }
 
   void main() {
@@ -91,13 +76,12 @@ const FRAGMENT_SHADER = `#version 300 es
     vec2 voidPoint = vec2((normalized.x - 0.5) / 0.48, (normalized.y - 0.39) / 0.31);
     float centralVoid = 1.0 - smoothstep(0.30, 1.02, length(voidPoint));
     float density = noiseValue * topEnvelope * sideBoost * (1.0 - centralVoid * 0.74) * 1.06;
-    // Keep the edge irregular without turning individual cells into noise specks.
-    float localJitter = (hash21(cell) - 0.5) * 0.018;
-    float active = smoothstep(0.35, 0.55, density + localJitter);
+    // Keep the edge coherent so neighboring cells form connected clouds instead of specks.
+    float cellActivity = smoothstep(0.34, 0.56, density);
     float merge = smoothstep(0.46, 0.70, density);
     float halfDot = mix(1.25, 3.12, merge) * u_pixelRatio;
     float square = step(cellOffset.x, halfDot) * step(cellOffset.y, halfDot);
-    float strength = square * active * smoothstep(0.02, 0.72, topEnvelope);
+    float strength = square * cellActivity * smoothstep(0.02, 0.72, topEnvelope);
 
     vec3 ink = mix(PLUM_LOW, WINE_MID, smoothstep(0.25, 0.68, density));
     ink = mix(ink, DUSTY_HIGH, smoothstep(0.70, 0.98, density));
@@ -110,11 +94,6 @@ const mix = (a, b, amount) => a + (b - a) * amount
 const smoothstep = (edge0, edge1, value) => {
   const amount = clamp01((value - edge0) / (edge1 - edge0))
   return amount * amount * (3 - 2 * amount)
-}
-
-const hash2d = (x, y) => {
-  const value = Math.sin((x + 37.17) * 127.1 + (y + 19.23) * 311.7) * 43758.5453123
-  return value - Math.floor(value)
 }
 
 const simplexNoise = (x, y) => {
@@ -156,31 +135,19 @@ const simplexNoise = (x, y) => {
   )
 }
 
-const fallbackFbm = (x, y) => {
-  let value = 0
-  let amplitude = 0.5
-  for (let octave = 0; octave < 4; octave += 1) {
-    value += simplexNoise(x, y) * amplitude
-    x = x * 2.02 + 17.1
-    y = y * 2.02 + 9.2
-    amplitude *= 0.5
-  }
-  return clamp01(value * 0.5 + 0.5)
-}
-
 const fallbackOrganicField = (x, y, time) => {
   const driftAx = time * 0.0306
   const driftAy = -time * 0.0216
   const driftBx = -time * 0.0198
   const driftBy = time * 0.0324
-  const warpX = fallbackFbm(x * 1.18 + driftAx + 13.7, y * 1.18 + driftAy + 4.1) * 2 - 1
-  const warpY = fallbackFbm(x * 1.18 + driftBx + 2.8, y * 1.18 + driftBy + 17.4) * 2 - 1
-  const warpedX = x * 1.72 + warpX * 0.72
-  const warpedY = y * 1.72 + warpY * 0.72
-  const broad = fallbackFbm(warpedX + driftAx + 7.2, warpedY + driftAy + 11.6)
-  const middle = fallbackFbm(warpedX * 1.65 - warpX * 0.48 + driftBx + 19.1, warpedY * 1.65 - warpY * 0.48 + driftBy + 5.7)
-  const grain = simplexNoise(warpedX * 5.2 + driftAx * 1.7 + 31.4, warpedY * 5.2 + driftAy * 1.7 + 8.6) * 0.5 + 0.5
-  return clamp01(broad * 0.53 + middle * 0.29 + grain * 0.18)
+  const warpX = simplexNoise(x * 0.92 + driftAx + 13.7, y * 0.92 + driftAy + 4.1) * 0.42
+  const warpY = simplexNoise(x * 0.92 + driftBx + 2.8, y * 0.92 + driftBy + 17.4) * 0.42
+  const warpedX = x * 1.58 + warpX
+  const warpedY = y * 1.58 + warpY
+  const broad = simplexNoise(warpedX + driftAx + 7.2, warpedY + driftAy + 11.6) * 0.5 + 0.5
+  const middle = simplexNoise(warpedX * 1.62 + driftBx + 19.1, warpedY * 1.62 + driftBy + 5.7) * 0.5 + 0.5
+  const detail = simplexNoise(warpedX * 3.25 - driftAx * 0.65 + 31.4, warpedY * 3.25 - driftAy * 0.65 + 8.6) * 0.5 + 0.5
+  return clamp01(broad * 0.56 + middle * 0.31 + detail * 0.13)
 }
 
 const colorToCss = (r, g, b) => `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`
@@ -245,6 +212,8 @@ export default function DotWave() {
     let elapsed = 0
     let frame = 0
     let previousTime = performance.now()
+    let lastPaintTime = 0
+    const frameInterval = 1000 / 30
     let renderer = createWebglRenderer(canvas)
 
     if (!renderer) {
@@ -259,7 +228,9 @@ export default function DotWave() {
       const rect = host.getBoundingClientRect()
       width = Math.max(1, rect.width)
       height = Math.max(1, rect.height)
-      dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const deviceDpr = Math.min(window.devicePixelRatio || 1, 1.25)
+      const pixelBudgetScale = Math.sqrt(2200000 / (width * height))
+      dpr = Math.min(deviceDpr, Math.max(0.5, pixelBudgetScale))
       const pixelWidth = Math.max(1, Math.round(width * dpr))
       const pixelHeight = Math.max(1, Math.round(height * dpr))
       if (renderer.gl) {
@@ -300,7 +271,7 @@ export default function DotWave() {
           const voidY = (normalizedY - 0.39) / 0.31
           const centralVoid = 1 - smoothstep(0.30, 1.02, Math.hypot(voidX, voidY))
           const density = densityNoise * topEnvelope * sideBoost * (1 - centralVoid * 0.74) * 1.06
-          const active = smoothstep(0.35, 0.55, density + (hash2d(x / gridSize, y / gridSize) - 0.5) * 0.018)
+          const active = smoothstep(0.34, 0.56, density)
           if (active <= 0.01) continue
 
           const merge = smoothstep(0.46, 0.70, density)
@@ -340,8 +311,13 @@ export default function DotWave() {
         frame = 0
         return
       }
+      if (time - lastPaintTime < frameInterval) {
+        frame = requestAnimationFrame(paint)
+        return
+      }
       const delta = Math.min(0.05, Math.max(0, (time - previousTime) * 0.001))
       previousTime = time
+      lastPaintTime = time
       if (!prefersReducedMotion()) elapsed += delta
       render()
       frame = requestAnimationFrame(paint)
@@ -350,6 +326,7 @@ export default function DotWave() {
     const start = () => {
       if (frame || document.visibilityState !== 'visible') return
       previousTime = performance.now()
+      lastPaintTime = 0
       if (prefersReducedMotion()) render()
       else frame = requestAnimationFrame(paint)
     }

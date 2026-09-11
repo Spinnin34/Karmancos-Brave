@@ -1,7 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AnimatePresence, motion } from 'motion/react'
-import { Skeleton } from 'boneyard-js/react'
 import {
   ArrowUpRight, Bookmark, Check, ChevronDown, Cloud, Download,
   History, ImagePlus, Import, LayoutGrid, Menu, MoreHorizontal,
@@ -32,6 +30,7 @@ const FAVICON_CACHE_KEY = 'karmancos:favicon-cache:v2'
 const MAX_CACHED_FAVICONS = 48
 const faviconCache = new Map()
 let faviconCacheHydrated = false
+let faviconPersistTimer = null
 
 function hydrateFaviconCache() {
   if (faviconCacheHydrated) return
@@ -53,17 +52,25 @@ function getCachedFavicon(source) {
   return dataUrl
 }
 
+function flushFaviconCache() {
+  if (faviconPersistTimer !== null) {
+    window.clearTimeout(faviconPersistTimer)
+    faviconPersistTimer = null
+  }
+  try {
+    localStorage.setItem(FAVICON_CACHE_KEY, JSON.stringify(Object.fromEntries(faviconCache)))
+  } catch {
+    // Keep the in-memory cache even when localStorage is full or disabled.
+  }
+}
+
 function persistFavicon(source, cachedSource = source) {
   if (!source || !cachedSource) return
   hydrateFaviconCache()
   faviconCache.delete(source)
   faviconCache.set(source, cachedSource)
   while (faviconCache.size > MAX_CACHED_FAVICONS) faviconCache.delete(faviconCache.keys().next().value)
-  try {
-    localStorage.setItem(FAVICON_CACHE_KEY, JSON.stringify(Object.fromEntries(faviconCache)))
-  } catch {
-    // Keep the in-memory cache even when localStorage is full or disabled.
-  }
+  if (faviconPersistTimer === null) faviconPersistTimer = window.setTimeout(flushFaviconCache, 180)
 }
 
 function readMemory(key, fallback) {
@@ -135,7 +142,7 @@ function Favicon({ url, title, size = 18, bare = false }) {
   return (
     <span className={`favicon ${bare ? 'favicon--bare' : ''} ${loaded ? 'has-image' : ''}`} style={{ '--favicon-size': `${size}px` }} aria-hidden="true">
       <span className="favicon-fallback">{initial}</span>
-      {source && <img src={source} data-source={source.startsWith('data:') ? '' : source} alt="" loading="eager" decoding="async" fetchPriority="low" referrerPolicy="no-referrer" onLoad={(event) => { setLoaded(true); if (event.currentTarget.dataset.source) persistFavicon(event.currentTarget.dataset.source) }} onError={handleError} />}
+      {source && <img src={source} data-source={source.startsWith('data:') ? '' : source} alt="" loading="eager" decoding="async" fetchpriority="low" referrerPolicy="no-referrer" onLoad={(event) => { setLoaded(true); if (event.currentTarget.dataset.source) persistFavicon(event.currentTarget.dataset.source) }} onError={handleError} />}
     </span>
   )
 }
@@ -427,15 +434,7 @@ function MonoPulse({ values = [18, 34, 25, 48, 39, 63, 56], compact = false }) {
   )
 }
 
-function BookmarkSkeleton() {
-  return (
-    <div className="bookmark-skeleton" aria-label="Loading saved pages">
-      {[0, 1].map((item) => <div className="skeleton-row" key={item}><span /><div><i /><i /></div></div>)}
-    </div>
-  )
-}
-
-function SavedPages({ bookmarks, loading, onAdd, onRemove, onReorder, onShowAll }) {
+function SavedPages({ bookmarks, onAdd, onRemove, onReorder, onShowAll }) {
   const [draggedId, setDraggedId] = useState(null)
   const dragOverId = useRef(null)
   const dragOverElement = useRef(null)
@@ -485,21 +484,19 @@ function SavedPages({ bookmarks, loading, onAdd, onRemove, onReorder, onShowAll 
         <span>Saved pages</span>
         <div><button aria-label="Add saved page" onClick={onAdd}><Plus size={14} /></button><button aria-label="Show all saved pages" onClick={onShowAll}><MoreHorizontal size={15} /></button></div>
       </div>
-      <Skeleton name="saved-pages" loading={loading} animate="shimmer" transition={240} darkColor="rgba(255,177,192,.08)" fallback={<BookmarkSkeleton />}>
-        <div className="bookmark-list">
-          {bookmarks.map((bookmark, index) => (
-            <motion.div className="bookmark-row" layout key={bookmark.id} draggable data-dragging={draggedId === bookmark.id ? 'true' : undefined} onDragStart={(event) => startDragging(event, bookmark.id)} onDragOver={(event) => dragOver(event, bookmark.id)} onDrop={(event) => drop(event, bookmark.id)} onDragEnd={stopDragging} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: .97 }} transition={{ delay: index * .035, duration: .2 }}>
-              <span className="bookmark-drag-handle" title="Drag to reorder" aria-hidden="true"><GripVertical size={14} /></span>
-              <button className="bookmark-link" onClick={() => window.location.assign(bookmark.url)} title={`Open ${bookmark.title}`}>
-                <Favicon url={bookmark.url} title={bookmark.title} size={28} bare />
-                <span className="bookmark-copy"><strong>{bookmark.title}</strong><small>{domainFor(bookmark.url)}</small></span>
-              </button>
-              <button className="bookmark-remove" onClick={() => onRemove(bookmark.id)} aria-label={`Remove ${bookmark.title}`}><X size={12} /></button>
-            </motion.div>
-          ))}
-          {!bookmarks.length && <button className="empty-bookmarks" onClick={onAdd}><Plus size={13} /> Save your first page</button>}
-        </div>
-      </Skeleton>
+      <div className="bookmark-list">
+        {bookmarks.map((bookmark) => (
+          <div className="bookmark-row" key={bookmark.id} draggable data-dragging={draggedId === bookmark.id ? 'true' : undefined} onDragStart={(event) => startDragging(event, bookmark.id)} onDragOver={(event) => dragOver(event, bookmark.id)} onDrop={(event) => drop(event, bookmark.id)} onDragEnd={stopDragging}>
+            <span className="bookmark-drag-handle" title="Drag to reorder" aria-hidden="true"><GripVertical size={14} /></span>
+            <button className="bookmark-link" onClick={() => window.location.assign(bookmark.url)} title={`Open ${bookmark.title}`}>
+              <Favicon url={bookmark.url} title={bookmark.title} size={28} bare />
+              <span className="bookmark-copy"><strong>{bookmark.title}</strong><small>{domainFor(bookmark.url)}</small></span>
+            </button>
+            <button className="bookmark-remove" onClick={() => onRemove(bookmark.id)} aria-label={`Remove ${bookmark.title}`}><X size={12} /></button>
+          </div>
+        ))}
+        {!bookmarks.length && <button className="empty-bookmarks" onClick={onAdd}><Plus size={13} /> Save your first page</button>}
+      </div>
     </div>
   )
 }
@@ -517,13 +514,13 @@ function AddBookmark({ onSave, onClose }) {
     } catch { setError('Enter a valid web address') }
   }
   return (
-    <motion.form className="bookmark-form" onSubmit={submit} initial={{ opacity: 0, y: -6, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -5, scale: .98 }} transition={{ duration: .18 }}>
+    <form className="bookmark-form" onSubmit={submit}>
       <div className="form-head"><span>Save a page</span><button type="button" onClick={onClose} aria-label="Close"><X size={13} /></button></div>
       <label><span>URL</span><input autoFocus value={url} onChange={(event) => { setUrl(event.target.value); setError('') }} placeholder="example.com" /></label>
       <label><span>Title</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional" /></label>
       {error && <p>{error}</p>}
       <button className="save-page" type="submit">Save page <ArrowUpRight size={13} /></button>
-    </motion.form>
+    </form>
   )
 }
 
@@ -537,7 +534,7 @@ function ProfileMenu({ profileImage, accountName, onName, onImage, onExport, onI
     onName(nextName)
   }
   return (
-    <motion.div className="profile-menu" initial={{ opacity: 0, y: 7, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 7, scale: .98 }} transition={{ duration: .18 }}>
+    <div className="profile-menu">
       <div className="profile-menu-head"><span>Local profile</span><button onClick={onClose}><X size={13} /></button></div>
       <button className="avatar-upload" onClick={() => imageInput.current?.click()}>
         <span className="large-avatar">{profileImage ? <img src={profileImage} alt="Profile" /> : accountName.charAt(0).toUpperCase()}<i><ImagePlus size={11} /></i></span>
@@ -554,11 +551,11 @@ function ProfileMenu({ profileImage, accountName, onName, onImage, onExport, onI
       </div>
       <input ref={backupInput} hidden type="file" accept="application/json" onChange={onImport} />
       <div className="memory-state"><ShieldCheck size={12} /><span>Private local memory</span></div>
-    </motion.div>
+    </div>
   )
 }
 
-function Sidebar({ open, collapsed, activeView, setActiveView, bookmarks, loading, onAdd, onRemove, onReorder, profileImage, accountName, onName, onImage, onExport, onImport, onCollapse, onClose }) {
+function Sidebar({ open, collapsed, activeView, setActiveView, bookmarks, onAdd, onRemove, onReorder, profileImage, accountName, onName, onImage, onExport, onImport, onCollapse, onClose }) {
   const [profileOpen, setProfileOpen] = useState(false)
   const sidebarRef = useRef(null)
   useEffect(() => {
@@ -582,8 +579,8 @@ function Sidebar({ open, collapsed, activeView, setActiveView, bookmarks, loadin
       <nav className="main-nav" aria-label="Primary navigation">
         {items.map(({ id, label, Icon }) => <button className={activeView === id ? 'active' : ''} key={id} onClick={() => { setActiveView(id); onClose() }}><Icon size={14} fill={id === 'saved' && activeView === id ? 'currentColor' : 'none'} /><span>{label}</span>{id === 'saved' && bookmarks.length > 0 && <em>{bookmarks.length}</em>}</button>)}
       </nav>
-      <SavedPages bookmarks={bookmarks} loading={loading} onAdd={onAdd} onRemove={onRemove} onReorder={onReorder} onShowAll={() => { setActiveView('saved'); onClose() }} />
-      <AnimatePresence>{profileOpen && <ProfileMenu profileImage={profileImage} accountName={accountName} onName={onName} onImage={onImage} onExport={onExport} onImport={onImport} onClose={() => setProfileOpen(false)} />}</AnimatePresence>
+      <SavedPages bookmarks={bookmarks} onAdd={onAdd} onRemove={onRemove} onReorder={onReorder} onShowAll={() => { setActiveView('saved'); onClose() }} />
+      {profileOpen && <ProfileMenu profileImage={profileImage} accountName={accountName} onName={onName} onImage={onImage} onExport={onExport} onImport={onImport} onClose={() => setProfileOpen(false)} />}
       <button className="profile" onClick={() => setProfileOpen((value) => !value)}>
         <span className="profile-avatar">{profileImage ? <img src={profileImage} alt="" /> : accountName.charAt(0).toUpperCase()}</span>
         <span><strong>{accountName}</strong><small>Local workspace</small></span><ChevronDown size={12} />
@@ -594,11 +591,11 @@ function Sidebar({ open, collapsed, activeView, setActiveView, bookmarks, loadin
 
 function EnginePeek({ engine, row }) {
   return (
-    <motion.aside className="engine-peek" style={{ '--engine-row': `${Math.min(59 + row * 48, 185)}px` }} initial={{ opacity: 0, x: -5, scale: .99 }} animate={{ opacity: 1, x: 0, scale: 1 }} exit={{ opacity: 0, x: -4, scale: .99 }} transition={{ duration: .12, ease: [0.22, 1, 0.36, 1] }}>
+    <aside className="engine-peek" style={{ '--engine-row': `${Math.min(59 + row * 48, 185)}px` }}>
       <div className="peek-head"><span className="engine-icon"><engine.Icon /></span><div><strong>{engine.name}</strong><small>{engine.hint}</small></div></div>
       <MonoPulse values={[engine.speed - 19, engine.focus - 27, engine.speed - 8, engine.focus - 12, engine.speed]} />
       <dl><div><dt>Speed</dt><dd>{engine.speed}<span>/100</span></dd></div><div><dt>Focus</dt><dd>{engine.focus}<span>/100</span></dd></div><div><dt>Privacy</dt><dd>{engine.privacy}</dd></div></dl>
-    </motion.aside>
+    </aside>
   )
 }
 
@@ -607,24 +604,24 @@ function EngineMenu({ current, onSelect, onClose }) {
   const [query, setQuery] = useState('')
   const filtered = ENGINES.filter((engine) => engine.name.toLowerCase().includes(query.toLowerCase()))
   return (
-    <motion.div className="engine-menu" initial={{ opacity: 0, y: -4, scale: .99 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -3, scale: .99 }} transition={{ duration: .14, ease: [0.22, 1, 0.36, 1] }}>
+    <div className="engine-menu">
       <label className="engine-filter"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a search engine" />{query && <button onClick={() => setQuery('')}><X size={12} /></button>}</label>
-      <div className="engine-list" onMouseLeave={() => setHovered(null)}>
+      <div className="engine-list">
         {filtered.map((engine, index) => (
-          <button className={current === engine.id ? 'selected' : ''} key={engine.id} onMouseEnter={() => setHovered({ engine, row: index })} onFocus={() => setHovered({ engine, row: index })} onBlur={() => setHovered(null)} onClick={() => { onSelect(engine.id); onClose() }}>
+          <button className={current === engine.id ? 'selected' : ''} key={engine.id} onFocus={() => setHovered({ engine, row: index })} onBlur={() => setHovered(null)} onClick={() => { onSelect(engine.id); onClose() }}>
             <span className="engine-icon"><engine.Icon /></span><span><strong>{engine.name}</strong><small>{engine.hint}</small></span>{current === engine.id ? <Check size={14} /> : <ArrowUpRight size={13} />}
           </button>
         ))}
         {!filtered.length && <div className="engine-empty">No engines found</div>}
       </div>
-      <AnimatePresence>{hovered && <EnginePeek key={hovered.engine.id} engine={hovered.engine} row={hovered.row} />}</AnimatePresence>
-    </motion.div>
+      {hovered && <EnginePeek key={hovered.engine.id} engine={hovered.engine} row={hovered.row} />}
+    </div>
   )
 }
 
 function SearchLaunch({ engine, query, onCancel }) {
   return (
-    <motion.div className="search-launch" role="status" aria-live="polite" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: .12, ease: [0.22, 1, 0.36, 1] }}>
+    <div className="search-launch" role="status" aria-live="polite">
       <span className="launch-icon"><engine.Icon /></span>
       <div className="launch-copy">
         <span>Opening {engine.name}</span>
@@ -632,7 +629,7 @@ function SearchLaunch({ engine, query, onCancel }) {
       </div>
       <button type="button" className="launch-cancel" onClick={onCancel} aria-label="Cancel search"><X size={13} /></button>
       <div className="launch-progress"><i /></div>
-    </motion.div>
+    </div>
   )
 }
 
@@ -674,12 +671,12 @@ function SearchHome({ engineId, setEngineId, onAdd, accountName }) {
   }
 
   return (
-    <motion.section className="search-home" ref={rootRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .28, ease: [0.22, 1, 0.36, 1] }}>
+    <section className="search-home" ref={rootRef}>
       <div className="workspace-line"><span><BrandMark /> {accountName}</span><i /><span><Cloud size={13} /> Synced locally</span></div>
       <div className="search-stage">
         <form className="search-shell" onSubmit={search}>
           <label onPointerEnter={() => setMenuOpen(false)}><span className="sr-only">Search the web</span><input onFocus={() => setMenuOpen(false)} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search with ${engine.name}…`} autoComplete="off" autoFocus /></label>
-          <AnimatePresence>{query && <motion.button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery('')} initial={{ opacity: 0, scale: .7 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .7 }}><X size={13} /></motion.button>}</AnimatePresence>
+          {query && <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery('')}><X size={13} /></button>}
           <div className="search-toolbar">
             <div>
               <button type="button" className="round-tool" aria-label="Add page" title="Save a page" onClick={onAdd}><Plus size={16} /></button>
@@ -689,10 +686,10 @@ function SearchHome({ engineId, setEngineId, onAdd, accountName }) {
           </div>
           <span className="search-highlight" />
         </form>
-        <AnimatePresence>{launching && <SearchLaunch engine={launching.engine} query={launching.query} onCancel={() => { clearTimeout(launchTimer.current); setLaunching(null) }} />}</AnimatePresence>
+        {launching && <SearchLaunch engine={launching.engine} query={launching.query} onCancel={() => { clearTimeout(launchTimer.current); setLaunching(null) }} />}
       </div>
-      <AnimatePresence>{menuOpen && <EngineMenu current={engine.id} onSelect={setEngineId} onClose={() => setMenuOpen(false)} />}</AnimatePresence>
-    </motion.section>
+      {menuOpen && <EngineMenu current={engine.id} onSelect={setEngineId} onClose={() => setMenuOpen(false)} />}
+    </section>
   )
 }
 
@@ -700,7 +697,7 @@ function LibraryView({ view, bookmarks, history, onRemove, onOpen }) {
   const data = view === 'history' ? history : bookmarks
   const title = view === 'saved' ? 'Saved pages' : view === 'history' ? 'Search history' : 'Preferences'
   return (
-    <motion.section className="library-view" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <section className="library-view">
       <span className="view-kicker">Local workspace</span><h1>{title}</h1>
       {view === 'settings' ? <div className="settings-card"><div><LayoutGrid size={16} /><span><strong>Private by default</strong><small>Your data stays in this browser until you export it.</small></span></div><div><ShieldCheck size={16} /><span><strong>Backup ready</strong><small>Use the profile menu to export or restore your memory.</small></span></div></div> : (
         <div className="library-list">{data.length ? data.map((item) => {
@@ -708,12 +705,12 @@ function LibraryView({ view, bookmarks, history, onRemove, onOpen }) {
           return <div key={item.id} className={view === 'saved' ? 'library-row-openable' : ''} role={view === 'saved' ? 'button' : undefined} tabIndex={view === 'saved' ? 0 : undefined} onClick={() => view === 'saved' && onOpen(item.url)} onKeyDown={(event) => { if (view === 'saved' && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen(item.url) } }}>{view === 'saved' ? <Favicon url={item.url} title={item.title} size={25} bare /> : <span className="favicon">{engine ? <engine.Icon /> : <Search size={12} />}</span>}<span><strong>{view === 'saved' ? item.title : item.query}</strong><small>{view === 'saved' ? item.url : `${engine?.name || 'Search'} · ${new Date(item.at).toLocaleDateString()}`}</small></span>{view === 'saved' ? <button onClick={(event) => { event.stopPropagation(); onRemove(item.id) }}><Trash2 size={13} /></button> : <span className="history-time">{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}</div>
         }) : <div className="library-empty"><Bookmark size={18} /><span>Nothing here yet</span><small>Your local activity will appear here.</small></div>}</div>
       )}
-    </motion.section>
+    </section>
   )
 }
 
 function Toast({ message }) {
-  return <AnimatePresence>{message && <motion.div className="toast" initial={{ opacity: 0, y: 12, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8 }}><Check size={13} />{message}</motion.div>}</AnimatePresence>
+  return message ? <div className="toast"><Check size={13} />{message}</div> : null
 }
 
 function App() {
@@ -728,7 +725,6 @@ function App() {
   const [bookmarkForm, setBookmarkForm] = useState(false)
   const [toast, setToast] = useState('')
   const toastTimer = useRef(null)
-  const loading = false
 
   const notify = (message) => {
     clearTimeout(toastTimer.current)
@@ -803,13 +799,13 @@ function App() {
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
-      <Sidebar open={sidebarOpen} collapsed={sidebarCollapsed} activeView={activeView} setActiveView={(view) => { setActiveView(view); setHistory(readMemory('history', [])) }} bookmarks={bookmarks} loading={loading} onAdd={() => setBookmarkForm(true)} onRemove={removeBookmark} onReorder={reorderBookmarks} profileImage={profileImage} accountName={accountName} onName={(name) => { setAccountName(name); notify('Display name updated') }} onImage={uploadImage} onExport={exportBackup} onImport={importBackup} onCollapse={() => { setSidebarCollapsed(true); setSidebarOpen(false) }} onClose={() => setSidebarOpen(false)} />
-      <AnimatePresence>{bookmarkForm && <AddBookmark onSave={saveBookmark} onClose={() => setBookmarkForm(false)} />}</AnimatePresence>
+      <Sidebar open={sidebarOpen} collapsed={sidebarCollapsed} activeView={activeView} setActiveView={(view) => { setActiveView(view); setHistory(readMemory('history', [])) }} bookmarks={bookmarks} onAdd={() => setBookmarkForm(true)} onRemove={removeBookmark} onReorder={reorderBookmarks} profileImage={profileImage} accountName={accountName} onName={(name) => { setAccountName(name); notify('Display name updated') }} onImage={uploadImage} onExport={exportBackup} onImport={importBackup} onCollapse={() => { setSidebarCollapsed(true); setSidebarOpen(false) }} onClose={() => setSidebarOpen(false)} />
+      {bookmarkForm && <AddBookmark onSave={saveBookmark} onClose={() => setBookmarkForm(false)} />}
       {sidebarOpen && <button className="scrim" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />}
       <main className="main-stage">
         <DotWave />
         <button className={`sidebar-reopen ${sidebarCollapsed ? 'visible' : ''}`} onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true) }} aria-label="Open sidebar"><Menu size={17} /></button>
-        <AnimatePresence mode="wait">{activeView === 'search' ? <SearchHome key="search" engineId={engineId} setEngineId={setEngineId} onAdd={() => setBookmarkForm(true)} accountName={accountName} /> : <LibraryView key={activeView} view={activeView} bookmarks={bookmarks} history={currentHistory} onRemove={removeBookmark} onOpen={(url) => window.location.assign(url)} />}</AnimatePresence>
+        {activeView === 'search' ? <SearchHome engineId={engineId} setEngineId={setEngineId} onAdd={() => setBookmarkForm(true)} accountName={accountName} /> : <LibraryView view={activeView} bookmarks={bookmarks} history={currentHistory} onRemove={removeBookmark} onOpen={(url) => window.location.assign(url)} />}
       </main>
       <Toast message={toast} />
     </div>
